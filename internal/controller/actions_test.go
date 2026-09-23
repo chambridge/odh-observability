@@ -1324,6 +1324,7 @@ func assertKorrel8rConfiguration(t *testing.T, config, metricsRule string) {
 		"direct: true",
 		"/etc/korrel8r/rules/all.yaml",
 		"/etc/korrel8r/custom/rhoai-metrics.yaml",
+		"/etc/korrel8r/custom/rhai-inference-rules.yaml",
 		"requestTimeout: 30s",
 		"sessionTimeout: 5m",
 	} {
@@ -1332,7 +1333,7 @@ func assertKorrel8rConfiguration(t *testing.T, config, metricsRule string) {
 		}
 	}
 	if !strings.Contains(metricsRule, `metric:metric:{exported_namespace="{{.metadata.namespace}}",exported_pod="{{.metadata.name}}"}`) {
-		t.Errorf("Korrel8r metrics rule must query the collector-exported Pod labels, got:\n%s", metricsRule)
+		t.Errorf("Korrel8r metrics rule must query the collector-exported workload labels, got:\n%s", metricsRule)
 	}
 }
 
@@ -1359,6 +1360,10 @@ func assertKorrel8rTLSEndpoint(t *testing.T, deployment, service, networkPolicy 
 	annotations := service.GetAnnotations()
 	if annotations["service.beta.openshift.io/serving-cert-secret-name"] != "korrel8r-tls" {
 		t.Errorf("Korrel8r Service must request a serving certificate, got annotations %v", annotations)
+	}
+	checksum, found, err := unstructured.NestedString(deployment.Object, "spec", "template", "metadata", "annotations", "platform.opendatahub.io/korrel8r-config-checksum")
+	if err != nil || !found || checksum == "" {
+		t.Errorf("Korrel8r Deployment must roll out when its generated ConfigMap changes")
 	}
 	policy := &networkingv1.NetworkPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(networkPolicy.Object, policy); err != nil {
