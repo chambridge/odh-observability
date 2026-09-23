@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -670,18 +673,69 @@ func (tc *TestContext) ensureNamespaceExists(name string) {
 }
 
 func (tc *TestContext) ensureOperatorGroupExists(namespace, name string) {
-	items := &unstructured.UnstructuredList{}
-	items.SetGroupVersionKind(gvk.OperatorGroup)
+	var (
+		items           *unstructured.UnstructuredList
+		namespaceLabels map[string]string
+	)
+	tc.g.Eventually(func() error {
+		ns := &corev1.Namespace{}
+		if err := tc.client.Get(tc.ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+			return err
+		}
 
-	err := tc.client.List(tc.ctx, items, client.InNamespace(namespace))
-	if err == nil && len(items.Items) > 0 {
+		listed := &unstructured.UnstructuredList{}
+		listed.SetGroupVersionKind(gvk.OperatorGroup)
+		if err := tc.client.List(tc.ctx, listed, client.InNamespace(namespace)); err != nil {
+			return err
+		}
+
+		namespaceLabels = ns.Labels
+		items = listed
+		return nil
+	}).WithTimeout(tc.Timeouts.olmOperationTimeout).WithPolling(2 * time.Second).Should(Succeed())
+	if items == nil {
+		tc.t.Fatalf("failed to list OperatorGroups in namespace %s", namespace)
 		return
+	}
+
+	for i := range items.Items {
+		if operatorGroupTargetsNamespace(&items.Items[i], namespace, namespaceLabels) {
+			return
+		}
+	}
+	if len(items.Items) > 0 {
+		tc.t.Fatalf("existing OperatorGroup in namespace %s does not target namespace %s", namespace, namespace)
 	}
 
 	tc.EventuallyResourceCreatedOrPatched(
 		WithMinimalObject(gvk.OperatorGroup, types.NamespacedName{Name: name, Namespace: namespace}),
 		WithCustomErrorMsg("OperatorGroup %s/%s should exist", namespace, name),
 	)
+}
+
+func operatorGroupTargetsNamespace(group *unstructured.Unstructured, namespace string, namespaceLabels map[string]string) bool {
+	targetNamespaces, found, err := unstructured.NestedStringSlice(group.Object, "spec", "targetNamespaces")
+	if err != nil {
+		return false
+	}
+	if found && len(targetNamespaces) > 0 {
+		return slices.Contains(targetNamespaces, namespace)
+	}
+
+	rawSelector, found, err := unstructured.NestedMap(group.Object, "spec", "selector")
+	if err != nil || !found || len(rawSelector) == 0 {
+		return err == nil
+	}
+
+	selector := &metav1.LabelSelector{}
+	if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(rawSelector, selector); err != nil {
+		return false
+	}
+	parsedSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return false
+	}
+	return parsedSelector.Matches(labels.Set(namespaceLabels))
 }
 
 func (tc *TestContext) ensureOwnNamespaceOperatorGroup(namespace, name string) {

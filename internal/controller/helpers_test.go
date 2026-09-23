@@ -131,6 +131,10 @@ func TestListAllNamespacesIncludesFallbackAndSorts(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:   "redhat-ods-monitoring",
+			Labels: map[string]string{"openshift.io/cluster-monitoring": "true"},
+		}},
 	).Build()
 
 	namespaces, err := listAllNamespaces(context.Background(), cli, "redhat-ods-monitoring")

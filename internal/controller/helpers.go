@@ -117,10 +117,18 @@ func listAllNamespaces(ctx context.Context, c client.Client, fallback string) ([
 		return nil, fmt.Errorf("listing namespaces: %w", err)
 	}
 	for _, namespace := range list.Items {
+		if namespace.Name == "" || namespace.DeletionTimestamp != nil {
+			if namespace.Name == fallback {
+				fallbackFound = true
+			}
+			continue
+		}
 		if namespace.Name == fallback {
 			fallbackFound = true
+			namespaces[namespace.Name] = struct{}{}
+			continue
 		}
-		if namespace.Name != "" && namespace.DeletionTimestamp == nil && !isSystemNamespace(&namespace) {
+		if !isSystemNamespace(&namespace) {
 			namespaces[namespace.Name] = struct{}{}
 		}
 	}
