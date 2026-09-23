@@ -77,11 +77,12 @@ const (
 	defaultTempoCPURequest    = "100m"
 	defaultTempoMemoryRequest = "256Mi"
 
-	defaultKorrel8rCPURequest    = "50m"
-	defaultKorrel8rMemoryRequest = "64Mi"
-	defaultKorrel8rCPULimit      = "200m"
-	defaultKorrel8rMemoryLimit   = "512Mi"
-	kubernetesServiceName        = "kubernetes"
+	defaultKorrel8rCPURequest         = "50m"
+	defaultKorrel8rMemoryRequest      = "64Mi"
+	defaultKorrel8rCPULimit           = "200m"
+	defaultKorrel8rMemoryLimit        = "512Mi"
+	kubernetesServiceName             = "kubernetes"
+	targetAllocatorServiceAccountName = "data-science-collector-targetallocator"
 
 	persesV1Alpha2 = "v1alpha2"
 
@@ -131,23 +132,25 @@ func buildTemplateData(ctx context.Context, c client.Client, monitoring *v1alpha
 	}
 
 	templateData := map[string]any{
-		"Namespace":              monitoringNamespace,
-		"GatewayNamespace":       getEnvOrDefault("GATEWAY_NAMESPACE", monitoringNamespace),
-		"Traces":                 monitoring.Spec.Traces != nil,
-		"Metrics":                monitoring.Spec.Metrics != nil,
-		"Logs":                   monitoring.Spec.Logs != nil,
-		"AcceleratorMetrics":     monitoring.Spec.Metrics != nil,
-		"OperatorNamespace":      operatorNamespace,
-		"OperatorName":           getEnvOrDefault("OPERATOR_NAME", "odh-observability"),
-		"OperatorPodPrefix":      getEnvOrDefault("OPERATOR_POD_PREFIX", "odh-observability"),
-		"MetricsExporters":       make(map[string]string),
-		"MetricsExporterNames":   []string{},
-		"PersesImage":            getPersesImage(),
-		"PersesAPIVersion":       persesAPIVersion,
-		"Korrel8rImage":          getKorrel8rImage(),
-		"Korrel8rServiceName":    Korrel8rServiceName,
-		"Korrel8rRequestTimeout": "30s",
-		"Korrel8rSessionTimeout": "5m",
+		"Namespace":                       monitoringNamespace,
+		"GatewayNamespace":                getEnvOrDefault("GATEWAY_NAMESPACE", monitoringNamespace),
+		"Traces":                          monitoring.Spec.Traces != nil,
+		"Metrics":                         monitoring.Spec.Metrics != nil,
+		"Logs":                            monitoring.Spec.Logs != nil,
+		"AcceleratorMetrics":              monitoring.Spec.Metrics != nil,
+		"OperatorNamespace":               operatorNamespace,
+		"OperatorName":                    getEnvOrDefault("OPERATOR_NAME", "odh-observability"),
+		"OperatorPodPrefix":               getEnvOrDefault("OPERATOR_POD_PREFIX", "odh-observability"),
+		"MetricsExporters":                make(map[string]string),
+		"MetricsExporterNames":            []string{},
+		"PersesImage":                     getPersesImage(),
+		"PersesAPIVersion":                persesAPIVersion,
+		"Korrel8rImage":                   getKorrel8rImage(),
+		"Korrel8rServiceName":             Korrel8rServiceName,
+		"Korrel8rRequestTimeout":          "30s",
+		"Korrel8rSessionTimeout":          "5m",
+		"TargetAllocatorServiceAccount":   targetAllocatorServiceAccountName,
+		"TargetAllocatorSecretNamespaces": []string{monitoringNamespace},
 	}
 
 	addResourceData(templateData)
@@ -161,6 +164,12 @@ func buildTemplateData(ctx context.Context, c client.Client, monitoring *v1alpha
 	}
 
 	if metrics := monitoring.Spec.Metrics; metrics != nil {
+		secretNamespaces, err := listAllNamespaces(ctx, c, monitoringNamespace)
+		if err != nil {
+			return nil, fmt.Errorf("listing namespaces for TargetAllocator Secret access: %w", err)
+		}
+		templateData["TargetAllocatorSecretNamespaces"] = secretNamespaces
+
 		if err := addMetricsData(metrics, isSNO, templateData); err != nil {
 			return nil, err
 		}
@@ -322,21 +331,28 @@ func kubernetesAPIServerCIDRs(endpointSlices []discoveryv1.EndpointSlice) ([]str
 // the operational error encountered while checking for them.
 func checkMonitoringPreconditions(ctx context.Context, c client.Client, monitoring *v1alpha1.Monitoring) error {
 	var allErrors *multierror.Error
-	checkOperator := func(name, missingMessage string) error {
-		_, err := olm.OperatorExists(ctx, c, name)
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, olm.ErrOperatorNotInstalled):
-			allErrors = multierror.Append(allErrors, errors.New(missingMessage))
-			return nil
-		default:
-			return fmt.Errorf("checking OLM operator %q: %w", name, err)
-		}
-	}
 
 	usageLogsConfigured := monitoring.Spec.UsageLogs != nil && monitoring.Spec.UsageLogs.Storage != nil
 	needsLoki := monitoring.Spec.Logs != nil || usageLogsConfigured
+
+	checkOperatorNames := func(names []string, missingMessage string) error {
+		for _, name := range names {
+			_, err := olm.OperatorExists(ctx, c, name)
+			switch {
+			case err == nil:
+				return nil
+			case errors.Is(err, olm.ErrOperatorNotInstalled):
+				continue
+			default:
+				return fmt.Errorf("checking OLM operator %q: %w", name, err)
+			}
+		}
+		allErrors = multierror.Append(allErrors, errors.New(missingMessage))
+		return nil
+	}
+	checkOperator := func(name, missingMessage string) error {
+		return checkOperatorNames([]string{name}, missingMessage)
+	}
 
 	if monitoring.Spec.Metrics != nil || monitoring.Spec.Traces != nil || usageLogsConfigured {
 		if err := checkOperator(opentelemetryOperator, conditions.OpenTelemetryCollectorOperatorMissingMessage); err != nil {

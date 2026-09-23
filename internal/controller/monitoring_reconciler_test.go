@@ -672,6 +672,24 @@ func TestPlatformConfigWatch_EnqueuesMonitoring(t *testing.T) {
 	}
 }
 
+func TestNamespaceWatchPredicate(t *testing.T) {
+	pred := namespaceWatchPredicate()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
+
+	if !pred.Create(event.CreateEvent{Object: ns}) {
+		t.Fatal("namespace creates should enqueue Monitoring")
+	}
+	if !pred.Delete(event.DeleteEvent{Object: ns}) {
+		t.Fatal("namespace deletes should enqueue Monitoring")
+	}
+	if pred.Update(event.UpdateEvent{ObjectOld: ns, ObjectNew: ns}) {
+		t.Fatal("namespace updates should not enqueue Monitoring")
+	}
+	if pred.Generic(event.GenericEvent{Object: ns}) {
+		t.Fatal("generic namespace events should not enqueue Monitoring")
+	}
+}
+
 func TestKorrel8rEndpointSliceWatch_EnqueuesForKorrel8rAndKubernetesAPI(t *testing.T) {
 	t.Setenv("MONITORING_NAMESPACE", "test-ns")
 

@@ -850,6 +850,16 @@ func setupInferencePrerequisites(t *testing.T, tc *TestContext, projectRoot stri
 		}
 	}
 
+	if testOpts.installOperators {
+		t.Log("Installing Cluster Observability, cert-manager, Tempo, OpenTelemetry, LeaderWorkerSet, and Red Hat Connectivity Link operators")
+		tc.EnsureOperatorInstalled(observabilityOpNamespace, observabilityOpName, observabilityOpChannel)
+		tc.EnsureOperatorInstalled(certManagerOpNamespace, certManagerOpName, certManagerOpChannel)
+		tc.EnsureOperatorInstalled(tempoOpNamespace, tempoOpName, tempoOpChannel)
+		tc.EnsureOperatorInstalled(opentelemetryOpNamespace, opentelemetryOpName, opentelemetryOpChannel)
+		tc.EnsureOperatorInstalledInOwnNamespace(leaderWorkerSetOpNamespace, leaderWorkerSetOpName, leaderWorkerSetOpChannel)
+		tc.EnsureOperatorInstalledFromCatalog(connectivityLinkOpNamespace, connectivityLinkOpName, connectivityLinkOpChannel, connectivityLinkOpSource)
+	}
+
 	t.Log("Setting up DSCI, DSC, and UIPlugin prerequisites")
 	for _, crd := range []string{
 		"dscinitializations.dscinitialization.opendatahub.io",
@@ -885,7 +895,37 @@ func setupInferencePrerequisites(t *testing.T, tc *TestContext, projectRoot stri
 		"Ready",
 	)
 
+	for _, crd := range []string{
+		"kuadrants.kuadrant.io",
+		"authpolicies.kuadrant.io",
+	} {
+		waitFor(
+			"CRD "+crd+" should be established",
+			schema.GroupVersionKind{
+				Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition",
+			},
+			types.NamespacedName{Name: crd},
+			"Established",
+		)
+	}
+	tc.ensureNamespaceExists(kuadrantResourceNamespace)
+	applyPrerequisite("kuadrant.yaml")
+	waitFor(
+		"Kuadrant kuadrant should be Ready",
+		schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1beta1", Kind: "Kuadrant"},
+		types.NamespacedName{Name: "kuadrant", Namespace: kuadrantResourceNamespace},
+		"Ready",
+	)
+
 	t.Log("Setting up LGTM and remaining inference prerequisites")
+	waitFor(
+		"CRD leaderworkersetoperators.operator.openshift.io should be established",
+		schema.GroupVersionKind{
+			Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition",
+		},
+		types.NamespacedName{Name: "leaderworkersetoperators.operator.openshift.io"},
+		"Established",
+	)
 	applyPrerequisite("lwsoperator.yaml")
 	waitFor(
 		"CRD leaderworkersets.leaderworkerset.x-k8s.io should be established",

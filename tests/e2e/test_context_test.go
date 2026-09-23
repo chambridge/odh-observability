@@ -684,7 +684,23 @@ func (tc *TestContext) ensureOperatorGroupExists(namespace, name string) {
 	)
 }
 
+func (tc *TestContext) ensureOwnNamespaceOperatorGroup(namespace, name string) {
+	tc.EventuallyResourceCreatedOrPatched(
+		WithMinimalObject(gvk.OperatorGroup, types.NamespacedName{Name: name, Namespace: namespace}),
+		WithMutateFunc(func(u *unstructured.Unstructured) error {
+			return unstructured.SetNestedSlice(u.Object, []any{namespace}, "spec", "targetNamespaces")
+		}),
+		WithCondition(jq.Match(`.spec.targetNamespaces | contains([%q])`, namespace)),
+		WithEventuallyTimeout(tc.Timeouts.olmOperationTimeout),
+		WithCustomErrorMsg("OperatorGroup %s/%s should target its own namespace", namespace, name),
+	)
+}
+
 func (tc *TestContext) ensureSubscriptionExists(namespace, name, channel string) {
+	tc.ensureSubscriptionExistsFromCatalog(namespace, name, channel, "redhat-operators")
+}
+
+func (tc *TestContext) ensureSubscriptionExistsFromCatalog(namespace, name, channel, source string) {
 	tc.EventuallyResourceCreatedOrPatched(
 		WithMinimalObject(gvk.Subscription, types.NamespacedName{Name: name, Namespace: namespace}),
 		WithMutateFunc(func(u *unstructured.Unstructured) error {
@@ -694,10 +710,7 @@ func (tc *TestContext) ensureSubscriptionExists(namespace, name, channel string)
 			if err := unstructured.SetNestedField(u.Object, channel, "spec", "channel"); err != nil {
 				return err
 			}
-			if err := unstructured.SetNestedField(u.Object, name, "spec", "package"); err != nil {
-				return err
-			}
-			if err := unstructured.SetNestedField(u.Object, "redhat-operators", "spec", "source"); err != nil {
+			if err := unstructured.SetNestedField(u.Object, source, "spec", "source"); err != nil {
 				return err
 			}
 			if err := unstructured.SetNestedField(u.Object, "openshift-marketplace", "spec", "sourceNamespace"); err != nil {
@@ -741,5 +754,23 @@ func (tc *TestContext) EnsureOperatorInstalled(namespace, name, channel string) 
 
 	nn := types.NamespacedName{Name: name, Namespace: namespace}
 	tc.ensureSubscriptionExists(namespace, name, channel)
+	tc.ensureCSVSucceeded(namespace, nn)
+}
+
+func (tc *TestContext) EnsureOperatorInstalledInOwnNamespace(namespace, name, channel string) {
+	tc.ensureNamespaceExists(namespace)
+	tc.ensureOwnNamespaceOperatorGroup(namespace, name)
+
+	nn := types.NamespacedName{Name: name, Namespace: namespace}
+	tc.ensureSubscriptionExists(namespace, name, channel)
+	tc.ensureCSVSucceeded(namespace, nn)
+}
+
+func (tc *TestContext) EnsureOperatorInstalledFromCatalog(namespace, name, channel, source string) {
+	tc.ensureNamespaceExists(namespace)
+	tc.ensureOperatorGroupExists(namespace, name)
+
+	nn := types.NamespacedName{Name: name, Namespace: namespace}
+	tc.ensureSubscriptionExistsFromCatalog(namespace, name, channel, source)
 	tc.ensureCSVSucceeded(namespace, nn)
 }

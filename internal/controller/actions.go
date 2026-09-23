@@ -248,8 +248,8 @@ func deployOpenTelemetryCollector(
 	cm.MarkTrue(conditions.ConditionOpenTelemetryCollectorAvailable)
 
 	*sources = append(*sources,
-		src(OpenTelemetryCollectorTemplate),
 		src(CollectorRBACTemplate),
+		src(OpenTelemetryCollectorTemplate),
 		src(CollectorServiceMonitorsTemplate),
 		// Service for internal telemetry re-exported on :8890 with TLS (always-on)
 		src(CollectorMonitorServiceTemplate),

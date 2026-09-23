@@ -49,6 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -500,6 +501,15 @@ func isKorrel8rEndpointSlice(obj client.Object) bool {
 		serviceName == Korrel8rServiceName
 }
 
+func namespaceWatchPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		UpdateFunc:  func(event.UpdateEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
 // SetupWithManager registers the controller with the manager.
 func (r *MonitoringReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	toSingleton := handler.EnqueueRequestsFromMapFunc(singletonRequests)
@@ -530,6 +540,8 @@ func (r *MonitoringReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Service{}, toSingleton, builder.WithPredicates(managedPredicate)).
 		Watches(&discoveryv1.EndpointSlice{}, toSingleton, builder.WithPredicates(predicate.NewPredicateFuncs(isKorrel8rEndpointSlice))).
 		Watches(&corev1.ServiceAccount{}, toSingleton, builder.WithPredicates(managedPredicate)).
+		// Namespace creation or deletion changes the TargetAllocator Secret Role allowlist.
+		Watches(&corev1.Namespace{}, toSingleton, builder.WithPredicates(namespaceWatchPredicate())).
 		Watches(&routev1.Route{}, toSingleton, builder.WithPredicates(managedPredicate)).
 		// Watch CRDs to react when optional operators are installed / removed.
 		Watches(&extv1.CustomResourceDefinition{}, toSingleton).
