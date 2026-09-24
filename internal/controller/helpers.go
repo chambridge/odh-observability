@@ -192,7 +192,7 @@ func isSystemNamespace(namespace *corev1.Namespace) bool {
 func syncPrometheusWebTLSCA(ctx context.Context, c client.Client, monitoring *v1alpha1.Monitoring) error {
 	log := logf.FromContext(ctx).WithName("syncPrometheusWebTLSCA")
 
-	if monitoring.Spec.Metrics == nil {
+	if monitoring.Spec.Metrics == nil || monitoring.Spec.Metrics.Storage == nil {
 		return nil
 	}
 
@@ -258,7 +258,7 @@ const thanosQuerierRouteName = "data-science-thanos-querier-route"
 // syncStatusURL fetches the Thanos Querier route and updates monitoring.Status.URL.
 // When metrics are not configured the URL is cleared.
 func syncStatusURL(ctx context.Context, c client.Client, monitoring *v1alpha1.Monitoring) error {
-	if monitoring.Spec.Metrics == nil {
+	if monitoring.Spec.Metrics == nil || monitoring.Spec.Metrics.Storage == nil {
 		monitoring.Status.URL = ""
 		return nil
 	}

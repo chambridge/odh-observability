@@ -271,7 +271,9 @@ func TestReconcile_PreconditionsFailed(t *testing.T) {
 
 	// Monitoring CR requesting metrics (so preconditions are checked).
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	r := newTestReconciler(t, s, fake.NewClientBuilder().WithScheme(s).WithObjects(m).WithStatusSubresource(m).Build())
 
@@ -315,7 +317,9 @@ func TestReconcile_PreconditionLookupFailureReturnsError(t *testing.T) {
 	registerOperatorConditionTypes(s)
 
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(m).WithStatusSubresource(m).
 		WithInterceptorFuncs(operatorConditionListForbidden()).Build()
@@ -425,7 +429,9 @@ func TestReconcile_NothingConfigured(t *testing.T) {
 func TestSyncStatusURL_RoutePresent(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	route := &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
@@ -454,7 +460,9 @@ func TestSyncStatusURL_RoutePresent(t *testing.T) {
 func TestSyncStatusURL_RouteMissing(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 	m.Status.URL = "https://stale.example.com"
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(m).Build()
@@ -570,7 +578,9 @@ func TestReconcile_PlatformVersionNotStampedOnFailedReconcile(t *testing.T) {
 		t.Setenv("POD_NAMESPACE", ns)
 
 		m := newMonitoring(v1alpha1.MonitoringInstanceName)
-		m.Spec.Metrics = &v1alpha1.Metrics{}
+		m.Spec.Metrics = &v1alpha1.Metrics{
+			Storage: &v1alpha1.MetricsStorage{},
+		}
 
 		r := newTestReconciler(t, s, fake.NewClientBuilder().WithScheme(s).
 			WithObjects(m, platformConfigMap(ns, version)).
@@ -591,7 +601,9 @@ func TestReconcile_PlatformVersionNotStampedOnFailedReconcile(t *testing.T) {
 		t.Setenv("POD_NAMESPACE", ns)
 
 		m := newMonitoring(v1alpha1.MonitoringInstanceName)
-		m.Spec.Metrics = &v1alpha1.Metrics{}
+		m.Spec.Metrics = &v1alpha1.Metrics{
+			Storage: &v1alpha1.MetricsStorage{},
+		}
 		m.GetReleaseStatus().SetPlatformRelease("2.19.0")
 
 		r := newTestReconciler(t, s, fake.NewClientBuilder().WithScheme(s).

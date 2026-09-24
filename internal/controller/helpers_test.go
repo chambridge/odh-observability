@@ -269,7 +269,9 @@ func TestSyncPrometheusWebTLSCA_NoMetrics(t *testing.T) {
 func TestSyncPrometheusWebTLSCA_ConfigMapMissing(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	cli := fake.NewClientBuilder().WithScheme(s).Build()
 	err := syncPrometheusWebTLSCA(context.Background(), cli, m)
@@ -281,7 +283,9 @@ func TestSyncPrometheusWebTLSCA_ConfigMapMissing(t *testing.T) {
 func TestSyncPrometheusWebTLSCA_ConfigMapPresent(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	cm := &unstructured.Unstructured{}
 	cm.SetAPIVersion("v1")
@@ -328,7 +332,9 @@ func TestSyncPrometheusWebTLSCA_ConfigMapPresent(t *testing.T) {
 func TestSyncPrometheusWebTLSCA_EmptyData(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	cm := &unstructured.Unstructured{}
 	cm.SetAPIVersion("v1")
@@ -349,7 +355,9 @@ func TestSyncPrometheusWebTLSCA_EmptyData(t *testing.T) {
 func TestSyncStatusURL_RoutePresent_MultipleIngress(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 
 	route := &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
@@ -378,7 +386,9 @@ func TestSyncStatusURL_RoutePresent_MultipleIngress(t *testing.T) {
 func TestSyncStatusURL_EmptyHost(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 	m.Status.URL = "https://stale.example.com"
 
 	route := &routev1.Route{
@@ -407,7 +417,9 @@ func TestSyncStatusURL_EmptyHost(t *testing.T) {
 func TestSyncStatusURL_NoIngress(t *testing.T) {
 	s := newTestScheme(t)
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
-	m.Spec.Metrics = &v1alpha1.Metrics{}
+	m.Spec.Metrics = &v1alpha1.Metrics{
+		Storage: &v1alpha1.MetricsStorage{},
+	}
 	m.Status.URL = "https://stale.example.com"
 
 	route := &routev1.Route{
@@ -473,17 +485,17 @@ func TestDetermineTLSEnabled(t *testing.T) {
 	}{
 		{
 			name:   "nil TLS",
-			traces: &v1alpha1.Traces{Storage: v1alpha1.TracesStorage{Backend: "pv"}},
+			traces: &v1alpha1.Traces{Storage: &v1alpha1.TracesStorage{Backend: "pv"}},
 			want:   false,
 		},
 		{
 			name:   "TLS disabled",
-			traces: &v1alpha1.Traces{Storage: v1alpha1.TracesStorage{Backend: "pv"}, TLS: &v1alpha1.TracesTLS{Enabled: false}},
+			traces: &v1alpha1.Traces{Storage: &v1alpha1.TracesStorage{Backend: "pv"}, TLS: &v1alpha1.TracesTLS{Enabled: false}},
 			want:   false,
 		},
 		{
 			name:   "TLS enabled",
-			traces: &v1alpha1.Traces{Storage: v1alpha1.TracesStorage{Backend: "pv"}, TLS: &v1alpha1.TracesTLS{Enabled: true}},
+			traces: &v1alpha1.Traces{Storage: &v1alpha1.TracesStorage{Backend: "pv"}, TLS: &v1alpha1.TracesTLS{Enabled: true}},
 			want:   true,
 		},
 	}
