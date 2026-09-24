@@ -1,12 +1,17 @@
 package e2e_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func readInferenceManifest(t *testing.T, name string) map[string]any {
@@ -58,4 +63,45 @@ func TestKuadrantManifest(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "kuadrant", metadata["name"])
 	require.Equal(t, "kuadrant-system", metadata["namespace"])
+}
+
+func TestApplyManifestIfAbsentPreservesExistingResource(t *testing.T) {
+	const manifest = `apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec: {}
+`
+	gvk := schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1beta1", Kind: "Kuadrant"}
+	existing := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kuadrant.io/v1beta1",
+		"kind":       "Kuadrant",
+		"metadata": map[string]any{
+			"name":      "kuadrant",
+			"namespace": "kuadrant-system",
+		},
+		"spec": map[string]any{
+			"observability": map[string]any{"enable": true},
+		},
+	}}
+
+	tc := &TestContext{
+		client: fake.NewClientBuilder().WithObjects(existing).Build(),
+		ctx:    context.Background(),
+	}
+	path := filepath.Join(t.TempDir(), "kuadrant.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0o600))
+
+	require.NoError(t, applyManifestIfAbsent(tc, path))
+
+	got := &unstructured.Unstructured{}
+	got.SetGroupVersionKind(gvk)
+	require.NoError(t, tc.Client().Get(context.Background(), types.NamespacedName{
+		Name: "kuadrant", Namespace: "kuadrant-system",
+	}, got))
+	enabled, found, err := unstructured.NestedBool(got.Object, "spec", "observability", "enable")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.True(t, enabled)
 }

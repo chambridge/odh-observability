@@ -799,6 +799,15 @@ func ensureCRDExists(ctx context.Context, tc *TestContext, name string) error {
 }
 
 func applyManifest(tc *TestContext, path string) error {
+	return applyManifestWithOptions(tc, path, true)
+}
+
+// applyManifestIfAbsent creates missing resources without taking ownership of existing ones.
+func applyManifestIfAbsent(tc *TestContext, path string) error {
+	return applyManifestWithOptions(tc, path, false)
+}
+
+func applyManifestWithOptions(tc *TestContext, path string, updateExisting bool) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -830,6 +839,9 @@ func applyManifest(tc *TestContext, path string) error {
 		}
 		if getErr != nil {
 			return getErr
+		}
+		if !updateExisting {
+			continue
 		}
 		resource.SetResourceVersion(current.GetResourceVersion())
 		if err := tc.Client().Update(tc.Context(), resource); err != nil {
@@ -876,7 +888,12 @@ func setupInferencePrerequisites(t *testing.T, tc *TestContext, projectRoot stri
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("inference prerequisite manifest %s is unavailable: %v", path, err)
 		}
-		if err := applyManifest(tc, path); err != nil {
+		apply := applyManifest
+		if name == "kuadrant.yaml" {
+			// Kuadrant may be preconfigured; this test only needs it to exist.
+			apply = applyManifestIfAbsent
+		}
+		if err := apply(tc, path); err != nil {
 			t.Fatalf("failed to apply inference prerequisite %s: %v", name, err)
 		}
 	}
