@@ -451,8 +451,9 @@ func (tc *MonitoringTestCtx) ValidateOpenTelemetryCollectorConfigurations(t *tes
 			monitoringCondition: jq.Match(`.spec.metrics != null`),
 			validation: jq.Match(`
 				(.spec.config.exporters | has("prometheus") and has("debug") and has("%s")) and
-				(.spec.config.service.pipelines.metrics.exporters | length == 3 and contains(["prometheus", "debug", "%s"]))
-			`, OtlpCustomExporter, OtlpCustomExporter),
+				(.spec.config.service.pipelines."metrics/scrape".exporters | length == 3 and contains(["prometheus", "debug", "%s"])) and
+				(.spec.config.service.pipelines."metrics/otlp".exporters | length == 3 and contains(["prometheus", "debug", "%s"]))
+			`, OtlpCustomExporter, OtlpCustomExporter, OtlpCustomExporter),
 		},
 		{
 			name: "Custom Traces Exporters",
@@ -2268,10 +2269,11 @@ func (tc *MonitoringTestCtx) ValidatePersesNetworkPolicy(t *testing.T) {
 			jq.Match(`.spec.podSelector.matchLabels["app.kubernetes.io/managed-by"] == "perses-operator"`),
 			jq.Match(`.spec.podSelector.matchLabels["app.kubernetes.io/name"] == "data-science-perses"`),
 			jq.Match(`.spec.policyTypes[0] == "Ingress"`),
-			jq.Match(`.spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "openshift-cluster-observability-operator"`),
-			jq.Match(`.spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/name"] == "perses-operator"`),
-			jq.Match(`.spec.ingress[0].from[1].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "openshift-operators"`),
-			jq.Match(`.spec.ingress[0].from[1].podSelector.matchLabels["app.kubernetes.io/name"] == "perses-operator"`),
+			jq.Match(`.spec.ingress[0].from | length == 3`),
+			jq.Match(`[.spec.ingress[0].from[].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]] | any(. == "openshift-cluster-observability-operator")`),
+			jq.Match(`[.spec.ingress[0].from[].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]] | any(. == "openshift-operators")`),
+			jq.Match(`[.spec.ingress[0].from[].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]] | any(. == "openshift-operators-redhat")`),
+			jq.Match(`[.spec.ingress[0].from[] | select(.podSelector.matchLabels["app.kubernetes.io/name"] == "perses-operator")] | length == 3`),
 			jq.Match(`.spec.ingress[0].ports[0].protocol == "TCP"`),
 			jq.Match(`.spec.ingress[0].ports[0].port == 8080`),
 		)),
@@ -2391,6 +2393,7 @@ func (tc *MonitoringTestCtx) ValidatePersesDatasourceWithPrometheus(t *testing.T
 		WithMinimalObject(gvk.PersesDatasource, types.NamespacedName{Name: PersesDatasourceName, Namespace: tc.MonitoringNamespace}),
 		WithCondition(And(
 			tc.monitoringOwnerReferencesCondition(),
+			jq.Match(`.status.conditions[] | select(.type == "Available") | .status == "True"`),
 			jq.Match(`.spec.config.default == false`),
 			jq.Match(`.spec.config.plugin.kind == "PrometheusDatasource"`),
 			jq.Match(`.spec.config.plugin.spec.proxy.kind == "HTTPProxy"`),
@@ -2404,6 +2407,7 @@ func (tc *MonitoringTestCtx) ValidatePersesDatasourceWithPrometheus(t *testing.T
 		WithMinimalObject(gvk.PersesDatasource, types.NamespacedName{Name: ClusterPrometheusDatasourceName, Namespace: tc.MonitoringNamespace}),
 		WithCondition(And(
 			tc.monitoringOwnerReferencesCondition(),
+			jq.Match(`.status.conditions[] | select(.type == "Available") | .status == "True"`),
 			jq.Match(`.spec.config.default == true`),
 			jq.Match(`.spec.config.plugin.kind == "PrometheusDatasource"`),
 			jq.Match(`.spec.config.plugin.spec.proxy.kind == "HTTPProxy"`),
@@ -2490,6 +2494,8 @@ func (tc *MonitoringTestCtx) runNetworkingTests(t *testing.T) {
 
 		t.Run("Prometheus restricted resource configuration", tc.ValidatePrometheusRestrictedResourceConfiguration)
 		t.Run("Prometheus secure proxy authentication", tc.ValidatePrometheusSecureProxyAuthentication)
+		t.Run("Tenant workload metrics namespace restriction", tc.ValidateTenantWorkloadMetricsNamespaceRestriction)
+		t.Run("OTLP metric identity cannot be spoofed", tc.ValidateOTLPMetricIdentityCannotBeSpoofed)
 		t.Run("Node metrics endpoint deployment", tc.ValidateNodeMetricsEndpointDeployment)
 		t.Run("Node metrics endpoint RBAC configuration", tc.ValidateNodeMetricsEndpointRBACConfiguration)
 	})
