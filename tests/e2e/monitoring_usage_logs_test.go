@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	common "github.com/opendatahub-io/odh-platform-utilities/api/common"
+	appsv1 "k8s.io/api/apps/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/opendatahub-io/odh-observability/internal/controller/conditions"
 	"github.com/opendatahub-io/odh-observability/internal/controller/gvk"
@@ -119,7 +121,14 @@ func (tc *MonitoringTestCtx) ValidateMaaSUsageGatewayContract(t *testing.T) {
 		Name: "usage-logs-all", Namespace: tc.MonitoringNamespace,
 	}, datasource); err != nil {
 		if k8serr.IsNotFound(err) {
-			t.Skip("MaaS Perses datasource is not installed on this monitoring test cluster")
+			installed, listErr := tc.maasInstalled()
+			if listErr != nil {
+				t.Fatalf("failed to determine whether MaaS is installed: %v", listErr)
+			}
+			if !installed {
+				t.Skip("MaaS is not installed on this standalone monitoring test cluster")
+			}
+			t.Fatalf("MaaS is installed but Perses datasource usage-logs-all is missing")
 		}
 		t.Fatalf("failed to read MaaS usage Perses datasource: %v", err)
 	}
@@ -164,6 +173,16 @@ func (tc *MonitoringTestCtx) ValidateMaaSUsageGatewayContract(t *testing.T) {
 			WithCustomErrorMsg("MaaS NetworkPolicy %s should allow the usage Loki gateway", name),
 		)
 	}
+}
+
+func (tc *MonitoringTestCtx) maasInstalled() (bool, error) {
+	deployments := &appsv1.DeploymentList{}
+	if err := tc.Client().List(tc.Context(), deployments, client.MatchingLabels{
+		"app.kubernetes.io/name": "maas-api",
+	}); err != nil {
+		return false, err
+	}
+	return len(deployments.Items) > 0, nil
 }
 
 // ValidateUsageLogsCollectorNotDeployedWithoutConfig tests that the logs collector is not deployed when logs are not configured.

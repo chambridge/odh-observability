@@ -818,7 +818,7 @@ func TestGarbageCollectionOwnershipAndNamespaceScope(t *testing.T) {
 	}
 }
 
-func TestGarbageCollectionPreservesLegacyUsageLokiStackDuringMigration(t *testing.T) {
+func TestGarbageCollectionCollectsLegacyUsageLokiStackDuringMigration(t *testing.T) {
 	monitoring := newMonitoring(v1alpha1.MonitoringInstanceName)
 	monitoring.UID = types.UID("monitoring-owner")
 	monitoring.Spec.UsageLogs = &v1alpha1.UsageLogs{
@@ -826,8 +826,8 @@ func TestGarbageCollectionPreservesLegacyUsageLokiStackDuringMigration(t *testin
 	}
 	legacy := ownedGarbageCollectionTestObject(controllergvk.LokiStack, monitoring.Spec.Namespace, dataScienceLokiStackName, monitoring.UID)
 
-	if shouldCollectOwnedResource(monitoring, legacy, nil, monitoring.Spec.Namespace) {
-		t.Fatal("legacy data-science LokiStack must be preserved while the dedicated usage stack is introduced")
+	if !shouldCollectOwnedResource(monitoring, legacy, nil, monitoring.Spec.Namespace) {
+		t.Fatal("legacy data-science LokiStack must be collected before the dedicated usage stack is introduced")
 	}
 
 	monitoring.Spec.UsageLogs = nil
@@ -837,16 +837,20 @@ func TestGarbageCollectionPreservesLegacyUsageLokiStackDuringMigration(t *testin
 }
 
 func TestUsageLokiDependencyWatch(t *testing.T) {
+	t.Setenv("MONITORING_NAMESPACE", "test-ns")
+
 	pred := predicate.NewPredicateFuncs(isUsageLokiDependency)
 	for _, test := range []struct {
 		name string
 		obj  client.Object
 		want bool
 	}{
-		{name: "gateway service", obj: &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-http"}}, want: true},
-		{name: "gateway CA bundle", obj: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-ca-bundle"}}, want: true},
-		{name: "other service", obj: &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "data-science-lokistack-gateway-http"}}, want: false},
-		{name: "other config map", obj: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "usage-config"}}, want: false},
+		{name: "gateway service", obj: &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-http", Namespace: "test-ns"}}, want: true},
+		{name: "gateway CA bundle", obj: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-ca-bundle", Namespace: "test-ns"}}, want: true},
+		{name: "other namespace service", obj: &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-http", Namespace: "other-ns"}}, want: false},
+		{name: "other namespace config map", obj: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "usage-gateway-ca-bundle", Namespace: "other-ns"}}, want: false},
+		{name: "other service", obj: &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "data-science-lokistack-gateway-http", Namespace: "test-ns"}}, want: false},
+		{name: "other config map", obj: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "usage-config", Namespace: "test-ns"}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := pred.Create(event.CreateEvent{Object: test.obj}); got != test.want {

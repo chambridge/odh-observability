@@ -504,17 +504,6 @@ func shouldCollectOwnedResource(
 		return false
 	}
 
-	// Older releases used data-science-lokistack for MaaS usage logs. Keep that
-	// owned stack during the first upgrade reconcile when no general log
-	// forwarding stack is configured; the new usage stack is rendered alongside
-	// it and the old stack can be removed explicitly after validation.
-	if obj.GetKind() == controllergvk.LokiStack.Kind &&
-		obj.GetName() == dataScienceLokiStackName &&
-		monitoring.Spec.Logs == nil &&
-		monitoring.Spec.UsageLogs != nil && monitoring.Spec.UsageLogs.Storage != nil {
-		return false
-	}
-
 	k := resourceKey{
 		gvk:       obj.GroupVersionKind(),
 		namespace: obj.GetNamespace(),
@@ -632,6 +621,9 @@ func isKorrel8rEndpointSlice(obj client.Object) bool {
 // resources are not owned or labeled by this operator, so they need a focused
 // predicate in addition to the managed-resource watch.
 func isUsageLokiDependency(obj client.Object) bool {
+	if obj.GetNamespace() != getEnvOrDefault("MONITORING_NAMESPACE", defaultMonitoringNamespace) {
+		return false
+	}
 	switch obj.GetName() {
 	case usageLokiStackName + "-gateway-http", usageLokiStackName + "-gateway-ca-bundle":
 		return true

@@ -1,18 +1,11 @@
 # Test-only MaaS PostgreSQL backend.
 #
 # The redhat-ai-gateway-infra namespace is created by the AI Gateway operator.
-# Apply this file only after that namespace exists and before (or while) MaaS is
-# enabled. This intentionally uses a static password and a PVC-backed single
-# replica; it is not a production database deployment.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: maas-db-config
-  namespace: redhat-ai-gateway-infra
-type: Opaque
-stringData:
-  DB_CONNECTION_URL: postgresql://maasadmin:maas-test-password@maas-postgres.redhat-ai-gateway-infra.svc.cluster.local:5432/maasdb?sslmode=disable
----
+# Create maas-postgres-credentials and maas-db-config first as documented in
+# docs/maas-test-setup.md. Apply this file only after that namespace exists and
+# before (or while) MaaS is enabled. The PVC-backed single replica is test-only
+# and must not be used on a shared or externally reachable cluster without
+# generating a private password and enabling TLS.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -48,6 +41,35 @@ spec:
       protocol: TCP
       targetPort: postgres
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maas-postgres-allow-maas-api
+  namespace: redhat-ai-gateway-infra
+  labels:
+    app.kubernetes.io/name: maas-postgres
+    app.kubernetes.io/part-of: rhoai-test-backends
+    platform.opendatahub.io/temporary: "true"
+spec:
+  # This selector matches the app label on the PostgreSQL pod below. The
+  # podSelector-only peer is intentionally namespace-local because maas-api
+  # is deployed in this same infrastructure namespace by MaaS.
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: maas-api
+              app.kubernetes.io/component: api
+              app.kubernetes.io/part-of: models-as-a-service
+      ports:
+        - protocol: TCP
+          port: 5432
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -79,13 +101,26 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: quay.io/sclorg/postgresql-16-c9s:latest
+          image: quay.io/sclorg/postgresql-16-c9s@sha256:be17c9b604900e0a4ddc4e7b4edfd558d6fdf7e76dc71cc438c3a2f8d4740699
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
           env:
             - name: POSTGRESQL_USER
               value: maasadmin
             - name: POSTGRESQL_PASSWORD
-              value: maas-test-password
+              valueFrom:
+                secretKeyRef:
+                  # Created separately so the password is never duplicated in
+                  # this manifest or embedded in a Deployment value.
+                  name: maas-postgres-credentials
+                  key: POSTGRESQL_PASSWORD
             - name: POSTGRESQL_DATABASE
               value: maasdb
           ports:

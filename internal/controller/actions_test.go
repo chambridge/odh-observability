@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1308,7 +1309,85 @@ func TestDeployLokiStack_UsageLogsOnlyUsesDedicatedStack(t *testing.T) {
 	}
 }
 
-func TestDeployLokiStack_LogsAndUsageUseIndependentStacks(t *testing.T) {
+func TestDeployLokiStack_WaitsForLegacyUsageStackDeletion(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.UID = types.UID("monitoring-owner")
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "usage-secret", CredentialMode: "static",
+	}}
+	legacy := ownedGarbageCollectionTestObject(gvk.LokiStack, m.Spec.Namespace, dataScienceLokiStackName, m.UID)
+	_ = unstructured.SetNestedField(legacy.Object, "usage-secret", "spec", "storage", "secret", "name")
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(kubernetesAPIServerEndpointSlice(), &legacy).Build()
+
+	if err := deployLokiStack(context.Background(), cli, m, cm, &sources); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("expected usage stack deployment to wait for legacy stack deletion, got %#v", sources)
+	}
+	condition := findCondition(m, conditions.ConditionLokiStackAvailable)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "LokiStackNotReady" {
+		t.Fatalf("expected LokiStackNotReady during migration, got %v", condition)
+	}
+}
+
+func TestDeployLokiStack_RejectsSharedStorageBucket(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.Logs = &v1alpha1.Logs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "logs-secret", CredentialMode: "static",
+	}}
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "usage-secret", CredentialMode: "static",
+	}}
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(
+			kubernetesAPIServerEndpointSlice(),
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "logs-secret", Namespace: m.Spec.Namespace}, Data: map[string][]byte{"bucketnames": []byte("shared")}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "usage-secret", Namespace: m.Spec.Namespace}, Data: map[string][]byte{"bucketnames": []byte("shared")}},
+		).Build()
+
+	err := deployLokiStack(context.Background(), cli, m, cm, &sources)
+	if err == nil || !strings.Contains(err.Error(), "distinct S3 buckets") {
+		t.Fatalf("expected shared bucket validation error, got %v", err)
+	}
+}
+
+func TestDeployLokiStack_RejectsSharedStorageSecretBeforeResolution(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.Logs = &v1alpha1.Logs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "shared-secret", CredentialMode: "static",
+	}}
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "shared-secret", CredentialMode: "static",
+	}}
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(kubernetesAPIServerEndpointSlice()).Build()
+
+	err := deployLokiStack(context.Background(), cli, m, cm, &sources)
+	if err == nil || !strings.Contains(err.Error(), "distinct storage Secrets") {
+		t.Fatalf("expected shared storage Secret validation error, got %v", err)
+	}
+}
+
+func TestDeployLokiStack_RequiresResolvedStorageBuckets(t *testing.T) {
 	s := newActionsTestScheme(t)
 	registerCRDs(s, gvk.LokiStack)
 
@@ -1323,6 +1402,57 @@ func TestDeployLokiStack_LogsAndUsageUseIndependentStacks(t *testing.T) {
 	cm := conditions.NewConditionsManager(m, m.Generation)
 	var sources []rendertemplate.TemplateSource
 	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(kubernetesAPIServerEndpointSlice()).Build()
+
+	err := deployLokiStack(context.Background(), cli, m, cm, &sources)
+	if err == nil || !strings.Contains(err.Error(), "must exist and contain non-empty bucketnames") {
+		t.Fatalf("expected unresolved storage bucket validation error, got %v", err)
+	}
+}
+
+func TestDeployLokiStack_BlocksUnownedLegacyUsageStack(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "usage-secret", CredentialMode: "static",
+	}}
+	legacy := &unstructured.Unstructured{Object: map[string]any{}}
+	legacy.SetGroupVersionKind(gvk.LokiStack)
+	legacy.SetName(dataScienceLokiStackName)
+	legacy.SetNamespace(m.Spec.Namespace)
+	_ = unstructured.SetNestedField(legacy.Object, "usage-secret", "spec", "storage", "secret", "name")
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(kubernetesAPIServerEndpointSlice(), legacy).Build()
+
+	err := deployLokiStack(context.Background(), cli, m, cm, &sources)
+	if err == nil || !strings.Contains(err.Error(), "unowned legacy") {
+		t.Fatalf("expected unowned legacy stack migration error, got %v", err)
+	}
+}
+
+func TestDeployLokiStack_LogsAndUsageUseIndependentStacks(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.Logs = &v1alpha1.Logs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "logs-secret", CredentialMode: "static",
+	}}
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "usage-secret", CredentialMode: "static",
+	}}
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		kubernetesAPIServerEndpointSlice(),
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "logs-secret", Namespace: m.Spec.Namespace}, Data: map[string][]byte{"bucketnames": []byte("logs")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "usage-secret", Namespace: m.Spec.Namespace}, Data: map[string][]byte{"bucketnames": []byte("usage")}},
+	).Build()
 
 	if err := deployLokiStack(context.Background(), cli, m, cm, &sources); err != nil {
 		t.Fatalf("unexpected error: %v", err)

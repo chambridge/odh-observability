@@ -341,8 +341,8 @@ oc label ns redhat-ods-monitoring \
 
 For a test-only MaaS validation, the optional [`docs/maas-test-setup.md`](maas-test-setup.md)
 guide includes an ephemeral PostgreSQL backend. Its pod template deliberately
-uses `app=postgres`, which is required by the MaaS-generated PostgreSQL egress
-rule. Do not use that fixture as a production database.
+uses `app=postgres`, matching the MaaS PostgreSQL egress peer and the fixture's
+database ingress policy. Do not use that fixture as a production database.
 
 ### MaaS usage logs and dashboards
 
