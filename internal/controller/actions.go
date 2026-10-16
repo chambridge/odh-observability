@@ -82,6 +82,7 @@ const (
 	UsageLogsOpenTelemetryCollectorNPTemplate        = "resources/usage-logs-opentelemetry-collector-network-policy.tmpl.yaml"
 	UsageLogsLokiStackNPTemplate                     = "resources/usage-logs-lokistack-network-policy.tmpl.yaml"
 	LokiStackTemplate                                = "resources/loki-stack.tmpl.yaml"
+	UsageLokiStackTemplate                           = "resources/usage-loki-stack.tmpl.yaml"
 	ClusterLogForwarderTemplate                      = "resources/cluster-log-forwarder.tmpl.yaml"
 	ClusterLogForwarderRBACTemplate                  = "resources/cluster-log-forwarder-rbac.tmpl.yaml"
 	Korrel8rDeploymentTemplate                       = "resources/korrel8r-deployment.tmpl.yaml"
@@ -97,6 +98,8 @@ const (
 	Korrel8rServiceName        = "korrel8r"
 	conditionTypeReady         = "Ready"
 	conditionStatusTrue        = "True"
+	dataScienceLokiStackName   = "data-science-lokistack"
+	usageLokiStackName         = "usage"
 )
 
 //go:embed resources monitoring
@@ -526,8 +529,14 @@ func deployUsageLogsCollector(
 		return nil
 	}
 
-	// Wait for LokiStack endpoint to be available in status (set only when Loki is ready)
-	if monitoring.Status.UsageLogsEndpoint == "" {
+	// Check the dedicated usage stack directly. Status may still contain the
+	// legacy data-science endpoint during an upgrade, so a non-empty status
+	// value alone must not allow the collector to start.
+	usageLokiReady, err := isLokiStackReady(ctx, c, monitoring, usageLokiStackName)
+	if err != nil {
+		return fmt.Errorf("checking %s LokiStack readiness: %w", usageLokiStackName, err)
+	}
+	if !usageLokiReady {
 		cm.MarkFalse(conditions.ConditionUsageLogsCollectorAvailable,
 			"LokiStackNotReady",
 			"Waiting for LokiStack to be ready")
@@ -564,8 +573,9 @@ func deployLokiStack(
 	cm *conditions.ConditionsManager,
 	sources *[]rendertemplate.TemplateSource,
 ) error {
-	needsLoki := monitoring.Spec.Logs != nil ||
-		(monitoring.Spec.UsageLogs != nil && monitoring.Spec.UsageLogs.Storage != nil)
+	logsConfigured := monitoring.Spec.Logs != nil && monitoring.Spec.Logs.Storage != nil
+	usageLogsConfigured := monitoring.Spec.UsageLogs != nil && monitoring.Spec.UsageLogs.Storage != nil
+	needsLoki := logsConfigured || usageLogsConfigured
 	if !needsLoki {
 		cm.MarkNotConfigured(conditions.ConditionLokiStackAvailable,
 			"LokiNotRequired", "Neither usage logs storage nor log forwarding configured")
@@ -583,13 +593,28 @@ func deployLokiStack(
 		return nil
 	}
 
-	// Check if LokiStack is actually ready
-	lokiReady, err := isLokiStackReady(ctx, c, monitoring)
-	if err != nil {
-		return fmt.Errorf("checking LokiStack readiness: %w", err)
+	// Logs and MaaS usage logs have different LokiStack contracts. Keep the
+	// general observability stack separate from the stack named "usage" that
+	// MaaS discovers for its access-log dashboards.
+	allReady := true
+	if logsConfigured {
+		lokiReady, err := isLokiStackReady(ctx, c, monitoring, dataScienceLokiStackName)
+		if err != nil {
+			return fmt.Errorf("checking %s LokiStack readiness: %w", dataScienceLokiStackName, err)
+		}
+		allReady = allReady && lokiReady
+		*sources = append(*sources, src(LokiStackTemplate))
+	}
+	if usageLogsConfigured {
+		lokiReady, err := isLokiStackReady(ctx, c, monitoring, usageLokiStackName)
+		if err != nil {
+			return fmt.Errorf("checking %s LokiStack readiness: %w", usageLokiStackName, err)
+		}
+		allReady = allReady && lokiReady
+		*sources = append(*sources, src(UsageLokiStackTemplate))
 	}
 
-	if lokiReady {
+	if allReady {
 		cm.MarkTrue(conditions.ConditionLokiStackAvailable)
 	} else {
 		cm.MarkFalse(conditions.ConditionLokiStackAvailable,
@@ -597,7 +622,6 @@ func deployLokiStack(
 			"LokiStack is not ready yet")
 	}
 
-	*sources = append(*sources, src(LokiStackTemplate))
 	return nil
 }
 
@@ -637,7 +661,7 @@ func deployClusterLogForwarder(
 		return nil
 	}
 
-	lokiReady, err := isLokiStackReady(ctx, c, monitoring)
+	lokiReady, err := isLokiStackReady(ctx, c, monitoring, dataScienceLokiStackName)
 	if err != nil {
 		return fmt.Errorf("checking LokiStack readiness for log forwarding: %w", err)
 	}
@@ -824,12 +848,12 @@ func hasReadyCondition(obj *unstructured.Unstructured) (bool, error) {
 }
 
 // isLokiStackReady checks if the LokiStack CR exists and is in a Ready state.
-func isLokiStackReady(ctx context.Context, c client.Client, monitoring *v1alpha1.Monitoring) (bool, error) {
+func isLokiStackReady(ctx context.Context, c client.Client, monitoring *v1alpha1.Monitoring, name string) (bool, error) {
 	lokiStack := &unstructured.Unstructured{}
 	lokiStack.SetGroupVersionKind(gvk.LokiStack)
 
 	err := c.Get(ctx, types.NamespacedName{
-		Name:      "data-science-lokistack",
+		Name:      name,
 		Namespace: monitoringNamespace(monitoring),
 	}, lokiStack)
 	if err != nil {

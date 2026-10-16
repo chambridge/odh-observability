@@ -1254,11 +1254,111 @@ func TestDeployLokiStack_LogsOnlyNoUsageLogs(t *testing.T) {
 	}
 }
 
+func TestDeployLokiStack_UsageLogsOnlyUsesDedicatedStack(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{
+		Storage: &v1alpha1.LokiStorageConfig{
+			Type:             "s3",
+			SecretName:       "usage-secret",
+			CredentialMode:   "static",
+			StorageClassName: "gp3-csi",
+		},
+	}
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(kubernetesAPIServerEndpointSlice()).Build()
+
+	if err := deployLokiStack(context.Background(), cli, m, cm, &sources); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 1 || sources[0].Path != UsageLokiStackTemplate {
+		t.Fatalf("expected only the dedicated usage LokiStack template, got %#v", sources)
+	}
+
+	data, err := buildTemplateData(context.Background(), cli, m, "")
+	if err != nil {
+		t.Fatalf("buildTemplateData error: %v", err)
+	}
+	if data["LokiStackName"] != dataScienceLokiStackName {
+		t.Errorf("general LokiStackName changed unexpectedly: %v", data["LokiStackName"])
+	}
+	if data["UsageLokiStackName"] != usageLokiStackName {
+		t.Errorf("expected UsageLokiStackName=%q, got %v", usageLokiStackName, data["UsageLokiStackName"])
+	}
+	if data["UsageLokiStorageSecretName"] != "usage-secret" {
+		t.Errorf("expected UsageLokiStorageSecretName=usage-secret, got %v", data["UsageLokiStorageSecretName"])
+	}
+	if data["UsageLogsEndpoint"] != "https://usage-gateway-http.test-ns.svc.cluster.local:8080/api/logs/v1/application/otlp" {
+		t.Errorf("unexpected UsageLogsEndpoint: %v", data["UsageLogsEndpoint"])
+	}
+	objects, err := rendertemplate.Render(context.Background(), s, []rendertemplate.TemplateSource{src(UsageLokiStackTemplate)}, data)
+	if err != nil {
+		t.Fatalf("rendering usage LokiStack template: %v", err)
+	}
+	usage := findRenderedResource(t, objects, "LokiStack", usageLokiStackName)
+	if got, _, _ := unstructured.NestedString(usage.Object, "spec", "storage", "secret", "name"); got != "usage-secret" {
+		t.Errorf("usage LokiStack must use usage-secret, got %q", got)
+	}
+	if got, _, _ := unstructured.NestedString(usage.Object, "spec", "tenants", "mode"); got != "openshift-logging" {
+		t.Errorf("usage LokiStack must use openshift-logging tenancy, got %q", got)
+	}
+}
+
+func TestDeployLokiStack_LogsAndUsageUseIndependentStacks(t *testing.T) {
+	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
+
+	m := newMonitoring(v1alpha1.MonitoringInstanceName)
+	m.Spec.Logs = &v1alpha1.Logs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "logs-secret", CredentialMode: "static",
+	}}
+	m.Spec.UsageLogs = &v1alpha1.UsageLogs{Storage: &v1alpha1.LokiStorageConfig{
+		Type: "s3", SecretName: "usage-secret", CredentialMode: "static",
+	}}
+
+	cm := conditions.NewConditionsManager(m, m.Generation)
+	var sources []rendertemplate.TemplateSource
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(kubernetesAPIServerEndpointSlice()).Build()
+
+	if err := deployLokiStack(context.Background(), cli, m, cm, &sources); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected data-science and usage LokiStack templates, got %#v", sources)
+	}
+	if sources[0].Path != LokiStackTemplate || sources[1].Path != UsageLokiStackTemplate {
+		t.Fatalf("unexpected template order: %#v", sources)
+	}
+
+	data, err := buildTemplateData(context.Background(), cli, m, "")
+	if err != nil {
+		t.Fatalf("buildTemplateData error: %v", err)
+	}
+	if data["LokiStorageSecretName"] != "logs-secret" || data["UsageLokiStorageSecretName"] != "usage-secret" {
+		t.Errorf("expected independent storage secrets, got logs=%v usage=%v", data["LokiStorageSecretName"], data["UsageLokiStorageSecretName"])
+	}
+}
+
 // --- deployUsageLogsCollector ---
 
 // usageLogsEndpoint is the LokiStack OTLP endpoint the reconciler publishes to
-// status once LokiStack is ready; the collector deploys only after it is set.
-const usageLogsEndpoint = "https://data-science-lokistack-gateway-http.test-ns.svc.cluster.local:8080/api/logs/v1/application/otlp"
+// status once the dedicated usage LokiStack is ready.
+const usageLogsEndpoint = "https://usage-gateway-http.test-ns.svc.cluster.local:8080/api/logs/v1/application/otlp"
+
+func readyUsageLokiStack(namespace string) *unstructured.Unstructured {
+	loki := &unstructured.Unstructured{}
+	loki.SetGroupVersionKind(gvk.LokiStack)
+	loki.SetName(usageLokiStackName)
+	loki.SetNamespace(namespace)
+	_ = unstructured.SetNestedSlice(loki.Object, []any{
+		map[string]any{"type": "Ready", "status": "True"},
+	}, "status", "conditions")
+	return loki
+}
 
 func TestDeployUsageLogsCollector_NoUsageLogs(t *testing.T) {
 	s := newActionsTestScheme(t)
@@ -1320,7 +1420,7 @@ func TestDeployUsageLogsCollector_LokiStackNotReady(t *testing.T) {
 			CredentialMode: "static",
 		},
 	}
-	// The endpoint is published to status only once LokiStack reports ready.
+	// The endpoint is published to status only once the usage LokiStack reports ready.
 	m.Status.UsageLogsEndpoint = ""
 
 	cm := conditions.NewConditionsManager(m, m.Generation)
@@ -1333,7 +1433,7 @@ func TestDeployUsageLogsCollector_LokiStackNotReady(t *testing.T) {
 	}
 
 	if len(sources) != 0 {
-		t.Errorf("expected no sources while the LokiStack endpoint is unset, got %d", len(sources))
+		t.Errorf("expected no sources while the usage LokiStack is not ready, got %d", len(sources))
 	}
 
 	c := findCondition(m, conditions.ConditionUsageLogsCollectorAvailable)
@@ -1351,6 +1451,7 @@ func TestDeployUsageLogsCollector_LokiStackNotReady(t *testing.T) {
 
 func TestDeployUsageLogsCollector_CRDMissing(t *testing.T) {
 	s := newActionsTestScheme(t)
+	registerCRDs(s, gvk.LokiStack)
 
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
 	m.Spec.UsageLogs = &v1alpha1.UsageLogs{
@@ -1365,7 +1466,7 @@ func TestDeployUsageLogsCollector_CRDMissing(t *testing.T) {
 	cm := conditions.NewConditionsManager(m, m.Generation)
 	var sources []rendertemplate.TemplateSource
 
-	cli := fake.NewClientBuilder().WithScheme(s).
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(readyUsageLokiStack(m.Spec.Namespace)).
 		WithInterceptorFuncs(missingCRDs(gvk.OpenTelemetryCollector)).Build()
 	err := deployUsageLogsCollector(context.Background(), cli, m, cm, &sources)
 	if err != nil {
@@ -1391,7 +1492,7 @@ func TestDeployUsageLogsCollector_CRDMissing(t *testing.T) {
 
 func TestDeployUsageLogsCollector_RendersCollectorRBACAndNetworkPolicies(t *testing.T) {
 	s := newActionsTestScheme(t)
-	registerCRDs(s, gvk.OpenTelemetryCollector)
+	registerCRDs(s, gvk.OpenTelemetryCollector, gvk.LokiStack)
 
 	m := newMonitoring(v1alpha1.MonitoringInstanceName)
 	m.Spec.UsageLogs = &v1alpha1.UsageLogs{
@@ -1406,7 +1507,8 @@ func TestDeployUsageLogsCollector_RendersCollectorRBACAndNetworkPolicies(t *test
 	cm := conditions.NewConditionsManager(m, m.Generation)
 	var sources []rendertemplate.TemplateSource
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(kubernetesAPIServerEndpointSlice()).Build()
+	cli := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(kubernetesAPIServerEndpointSlice(), readyUsageLokiStack(m.Spec.Namespace)).Build()
 	if err := deployUsageLogsCollector(context.Background(), cli, m, cm, &sources); err != nil {
 		t.Fatalf("deployUsageLogsCollector error: %v", err)
 	}
@@ -1437,7 +1539,7 @@ func TestDeployUsageLogsCollector_RendersCollectorRBACAndNetworkPolicies(t *test
 		"ClusterRole/data-science-usage-logs-processor",
 		"ClusterRoleBinding/data-science-usage-logs-processor",
 		"NetworkPolicy/data-science-usage-logs-collector-allow",
-		"NetworkPolicy/data-science-lokistack-allow",
+		"NetworkPolicy/usage-allow",
 	} {
 		if rendered[key] == nil {
 			t.Errorf("missing rendered resource %s (got %v)", key, slices.Sorted(maps.Keys(rendered)))
@@ -1453,7 +1555,7 @@ func TestDeployUsageLogsCollector_RendersCollectorRBACAndNetworkPolicies(t *test
 	if !ok {
 		t.Fatal("UsageLogsCollectorName should be a string")
 	}
-	lokiStackName, ok := data["LokiStackName"].(string)
+	lokiStackName, ok := data["UsageLokiStackName"].(string)
 	if !ok {
 		t.Fatal("LokiStackName should be a string")
 	}
@@ -1461,7 +1563,7 @@ func TestDeployUsageLogsCollector_RendersCollectorRBACAndNetworkPolicies(t *test
 	assertUsageLogsCollectorConfig(t, rendered["OpenTelemetryCollector/data-science-usage-logs"])
 	assertUsageLogsNetworkPolicies(t, usageLogsNetworkPolicyPeers{
 		collectorPolicy:  rendered["NetworkPolicy/data-science-usage-logs-collector-allow"],
-		lokiStackPolicy:  rendered["NetworkPolicy/data-science-lokistack-allow"],
+		lokiStackPolicy:  rendered["NetworkPolicy/usage-allow"],
 		collectorPodName: collectorName + "-collector",
 		lokiStackName:    lokiStackName,
 		namespace:        m.Spec.Namespace,
